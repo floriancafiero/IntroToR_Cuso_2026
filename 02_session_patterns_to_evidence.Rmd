@@ -1,0 +1,840 @@
+---
+title: "Session 2 — From description to statistical evidence"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+editor_options:
+  chunk_output_type: inline
+---
+
+**Course:** R for Research  
+**Format:** online, 2 hours  
+**Language:** English  
+**Dataset:** `carData::SLID` — Survey of Labour and Income Dynamics  
+
+## What we will do
+
+In Session 1, we learned how to inspect, transform, summarise and visualise a real social-science dataset.
+
+Today we move one step further:
+
+> **How do we go from a pattern in a sample to an estimated relationship with uncertainty?**
+
+We will continue to use the 1994 Ontario extract from the Canadian Survey of Labour and Income Dynamics (`SLID`). The main empirical question will be:
+
+> **How is education associated with hourly wages, and how does that association change when we also consider age and other respondent characteristics?**
+
+This is a useful social-science example because it lets us move naturally from descriptive statistics to confidence intervals, group comparisons, simple regression and multiple regression.
+
+The goal is not to turn statistical output into a ritual. At every step we will ask:
+
+> **What quantity did we estimate, in what units, and what can we reasonably say about it?**
+
+A final caution before we start: these data come from **Ontario in 1994**. We will use them to learn statistical reasoning. We should not treat the results as estimates of present-day Canadian society, and we are not using the survey design or weights required for formal population inference.
+
+---
+
+# Learning objectives
+
+By the end of the session, you should be able to:
+
+- distinguish **variation in the data** from **uncertainty around an estimate**;
+- calculate and interpret a standard error and a confidence interval;
+- compare two groups using differences and uncertainty, not only a p-value;
+- understand a linear regression formula of the form `outcome ~ predictor`;
+- fit a model with `lm()`;
+- interpret a regression coefficient in the units of the data;
+- understand how R represents categorical predictors;
+- fit a multiple regression model with several predictors;
+- explain what “holding other variables constant” means;
+- recognise that statistical adjustment does not by itself establish causality;
+- write a short result sentence that matches the evidence actually produced.
+
+---
+
+# Before the session
+
+We use the same packages as in Session 1.
+
+If the packages are not installed on your computer yet, install them once:
+
+```{r, eval=FALSE}
+# install.packages() downloads and installs a package from CRAN.
+# The package name is text, so it is written between quotation marks.
+#
+# Installation is normally a ONE-TIME operation on a computer.
+# These lines do not need to be run every time you start R.
+
+install.packages("tidyverse")
+install.packages("carData")
+```
+
+At the beginning of a new R session, load the tools and data we need:
+
+```{r}
+# library() does NOT install a package.
+# It loads an already-installed package into the current R session.
+# This is why library(tidyverse) is normally run again after restarting R.
+
+library(tidyverse)
+
+# data() loads a dataset that is distributed inside an installed package.
+# Here the dataset is called SLID and it lives in the carData package.
+data("SLID", package = "carData")
+
+# Create a lower-case object name that we will use throughout the course.
+# This leaves the original SLID object unchanged.
+slid <- SLID
+```
+
+Check that everything worked:
+
+```{r}
+# glimpse() gives a compact view of:
+# - the number of rows and columns;
+# - variable names;
+# - variable types;
+# - a few example values.
+glimpse(slid)
+
+# summary() adapts its output to each variable type.
+# For numeric variables it shows quantities such as the median and quartiles.
+# For factors it shows counts by category.
+summary(slid)
+```
+
+---
+
+# 1. Recap: describe before you model
+
+Our main outcome today is hourly wage.
+
+Before fitting any model, inspect the variable.
+
+```{r}
+# is.na() produces TRUE for each missing wage and FALSE otherwise.
+# sum() then counts the TRUE values, because TRUE behaves like 1 here.
+sum(is.na(slid$wages))
+
+# Taking the mean of TRUE/FALSE values gives the proportion that is TRUE.
+# This therefore gives the proportion of wage observations that are missing.
+mean(is.na(slid$wages))
+
+# summary() describes the observed values and also reports missingness.
+summary(slid$wages)
+```
+
+Remember that `NA` is not zero. It means that the value is unavailable.
+
+Let us make the distribution visible.
+
+```{r}
+# ggplot() starts the figure and tells R which dataset to use.
+# aes(x = wages) maps the wages variable to the horizontal axis.
+ggplot(slid, aes(x = wages)) +
+  # geom_histogram() divides wages into intervals and counts observations.
+  # binwidth = 2 means each bar covers a two-unit wage interval.
+  # boundary = 0 makes the bin boundaries start at multiples of 2 from zero.
+  geom_histogram(binwidth = 2, boundary = 0) +
+  # labs() gives the plot labels that a reader will actually see.
+  labs(
+    x = "Hourly wage",
+    y = "Number of respondents",
+    title = "Distribution of observed hourly wages"
+  ) +
+  # theme_minimal() changes presentation, not the underlying data.
+  theme_minimal()
+```
+
+The distribution is not perfectly symmetric. That immediately tells us something important:
+
+> A mean is useful, but it does not describe the whole distribution.
+
+Compare mean and median:
+
+```{r}
+slid |>
+  # summarise() reduces many rows to a small set of summary statistics.
+  summarise(
+    # na.rm = TRUE tells mean() to ignore missing wage values for this calculation.
+    mean_wage = mean(wages, na.rm = TRUE),
+
+    # The median is the middle observed wage after ordering the values.
+    median_wage = median(wages, na.rm = TRUE),
+
+    # The standard deviation describes how dispersed individual wages are
+    # around their mean.
+    sd_wage = sd(wages, na.rm = TRUE)
+  )
+```
+
+## First principle of Session 2
+
+A statistical model does not replace descriptive analysis.
+
+A useful workflow is:
+
+```text
+inspect → visualise → estimate → quantify uncertainty → interpret
+```
+
+---
+
+# 2. From a sample mean to uncertainty
+
+Suppose we want to estimate the mean hourly wage in the observations for which wage is available.
+
+First create a clean wage vector:
+
+```{r}
+# slid$wages extracts the wages column as a vector.
+# !is.na(slid$wages) is TRUE only where the wage is observed.
+# The square brackets keep only those observed positions.
+wage_vector <- slid$wages[!is.na(slid$wages)]
+
+# length() tells us how many observed wage values remain.
+length(wage_vector)
+```
+
+Now calculate the sample mean and standard deviation.
+
+```{r}
+# The mean describes the centre of the observed wage values.
+mean(wage_vector)
+
+# The standard deviation describes variation between individual respondents.
+sd(wage_vector)
+```
+
+These two quantities answer different questions.
+
+- **Mean:** where is the centre of the observed values?
+- **Standard deviation (SD):** how dispersed are individual observed values around that mean?
+
+But if we are interested in the mean as an **estimate**, we also want to know how precisely it has been estimated.
+
+## Standard error
+
+For a simple mean, the standard error is:
+
+```text
+SE = SD / sqrt(n)
+```
+
+Let us calculate every step explicitly.
+
+```{r}
+# Number of non-missing wage observations.
+n_wage <- length(wage_vector)
+
+# Estimated mean wage.
+mean_wage <- mean(wage_vector)
+
+# Variation between individual observed wages.
+sd_wage <- sd(wage_vector)
+
+# sqrt(n_wage) is the square root of the sample size.
+# Dividing the SD by sqrt(n) gives the standard error of the mean.
+se_wage <- sd_wage / sqrt(n_wage)
+
+# Typing an object's name asks R to print its current value.
+n_wage
+mean_wage
+sd_wage
+se_wage
+```
+
+The distinction is fundamental:
+
+```text
+SD  = variability among observations
+SE  = uncertainty around the estimated mean
+```
+
+A dataset can contain highly variable people and still estimate its mean quite precisely if the sample is large.
+
+## Approximate 95% confidence interval
+
+With a large sample, a common approximation is:
+
+```text
+estimate ± 1.96 × standard error
+```
+
+```{r}
+# Move 1.96 standard errors below the estimated mean.
+lower_ci <- mean_wage - 1.96 * se_wage
+
+# Move 1.96 standard errors above the estimated mean.
+upper_ci <- mean_wage + 1.96 * se_wage
+
+lower_ci
+upper_ci
+```
+
+We can do all of this in one tidyverse pipeline:
+
+```{r}
+wage_summary <- slid |>
+  summarise(
+    # Count only rows where wages are observed.
+    n = sum(!is.na(wages)),
+
+    # Estimate the mean wage among those observed values.
+    mean_wage = mean(wages, na.rm = TRUE),
+
+    # Describe variation between respondents.
+    sd_wage = sd(wages, na.rm = TRUE),
+
+    # Use statistics created earlier in the SAME summarise() call.
+    # Here n and sd_wage already exist when se_wage is calculated.
+    se_wage = sd_wage / sqrt(n),
+
+    # Construct the approximate 95% confidence interval.
+    lower = mean_wage - 1.96 * se_wage,
+    upper = mean_wage + 1.96 * se_wage
+  )
+
+# Print the resulting one-row summary table.
+wage_summary
+```
+
+### What a confidence interval is not
+
+A 95% confidence interval around the mean is **not**:
+
+> “the interval containing 95% of respondents.”
+
+It is an interval expressing uncertainty around an **estimated quantity** — here, the mean.
+
+---
+
+# 3. Comparing groups: estimate the difference
+
+A very common social-science question is whether two groups differ on an outcome.
+
+The SLID data contain a variable called `sex`, with categories recorded in the dataset.
+
+First inspect it.
+
+```{r}
+# levels() shows the possible categories of a factor and their order.
+# The order matters later because regression uses one level as a reference.
+levels(slid$sex)
+
+# count() returns one row per category with the number of observations.
+slid |>
+  count(sex)
+```
+
+Now visualise wages by recorded sex category.
+
+```{r}
+ggplot(slid, aes(x = sex, y = wages)) +
+  # A boxplot displays the median, quartiles and potential outliers.
+  # outlier.alpha changes only how transparent the outlier points appear.
+  geom_boxplot(outlier.alpha = 0.25) +
+  labs(
+    x = "Recorded sex category",
+    y = "Hourly wage",
+    title = "Observed hourly wages by recorded sex category"
+  ) +
+  theme_minimal()
+```
+
+Do not jump straight to a test. First calculate quantities we can interpret directly.
+
+```{r}
+sex_summary <- slid |>
+  # group_by() means that summarise() will now work separately for each sex category.
+  group_by(sex) |>
+  summarise(
+    # Count only respondents whose wage is observed.
+    n = sum(!is.na(wages)),
+
+    # Mean observed wage in the group.
+    mean_wage = mean(wages, na.rm = TRUE),
+
+    # Median observed wage in the group.
+    median_wage = median(wages, na.rm = TRUE),
+
+    # Variation between observed wages inside the group.
+    sd_wage = sd(wages, na.rm = TRUE),
+
+    # Precision of the estimated group mean.
+    se_wage = sd_wage / sqrt(n)
+  )
+
+sex_summary
+```
+
+This gives us two estimated means. We can now ask about their difference.
+
+## A two-sample t-test
+
+R can estimate the difference and its uncertainty with `t.test()`.
+
+```{r}
+# Formula syntax in R usually puts:
+#   outcome ~ explanatory variable
+#
+# Here R compares wages across the categories of sex.
+wage_ttest <- t.test(
+  wages ~ sex,
+  data = slid
+)
+
+# Print the complete test output.
+wage_ttest
+```
+
+The output contains several quantities:
+
+- estimated group means;
+- a confidence interval for their difference;
+- a test statistic;
+- degrees of freedom;
+- a p-value.
+
+For research interpretation, a useful order is:
+
+> **difference → uncertainty → substantive meaning → p-value if useful**
+
+rather than:
+
+> **p < .05 → stop thinking**
+
+## What a p-value does not tell you
+
+A p-value is not:
+
+- the probability that the null hypothesis is true;
+- the probability that the result is “due to chance”;
+- the size of an effect;
+- the practical importance of a difference.
+
+With large samples, even small differences can produce small p-values.
+
+### Important substantive caution
+
+If two groups have different observed mean wages, this descriptive comparison does **not** tell us why.
+
+For example, the groups may also differ in age, education, occupation, work experience, hours, sector, or many variables that are absent from this small teaching dataset.
+
+That question motivates regression.
+
+---
+
+# Short break
+
+---
+
+# 4. Regression: one language for many research questions
+
+Regression gives us a general language for estimating relationships between variables.
+
+We will first create one analysis dataset and use the **same observations** in all models we want to compare.
+
+This is an important research habit: otherwise a coefficient can change simply because the set of observations changed.
+
+```{r}
+analysis_data <- slid |>
+  # Keep only variables that will appear in today's models.
+  select(wages, education, age, sex, language) |>
+
+  # drop_na() removes a row if ANY of these retained variables is missing.
+  # Using one common analysis sample makes later model comparisons cleaner.
+  drop_na()
+
+# nrow() checks how many respondents remain after removing incomplete rows.
+nrow(analysis_data)
+
+# Inspect the variables and types in the resulting analysis dataset.
+glimpse(analysis_data)
+```
+
+## Our first regression question
+
+> How is education associated with hourly wages?
+
+Before modelling, visualise the data.
+
+```{r}
+ggplot(
+  analysis_data,
+  aes(x = education, y = wages)
+) +
+  # Education is measured in whole years, so points would otherwise sit
+  # directly on top of one another.
+  # width adds a tiny horizontal displacement purely for visibility.
+  geom_jitter(width = 0.12, height = 0, alpha = 0.10) +
+  labs(
+    x = "Years of education",
+    y = "Hourly wage",
+    title = "Education and observed hourly wages"
+  ) +
+  theme_minimal()
+```
+
+Add a linear trend.
+
+```{r}
+ggplot(
+  analysis_data,
+  aes(x = education, y = wages)
+) +
+  geom_jitter(width = 0.12, height = 0, alpha = 0.10) +
+
+  # method = "lm" asks ggplot2 to fit a linear model.
+  # The line is therefore the visual counterpart of the model fitted below.
+  geom_smooth(method = "lm") +
+
+  labs(
+    x = "Years of education",
+    y = "Hourly wage",
+    title = "Education and observed hourly wages"
+  ) +
+  theme_minimal()
+```
+
+The shaded band shows uncertainty around the estimated **mean relationship**.
+
+## Fit the model with `lm()`
+
+```{r}
+# lm() means "linear model".
+# The formula wages ~ education reads:
+# "model wages as a function of education".
+model_1 <- lm(
+  wages ~ education,
+  data = analysis_data
+)
+```
+
+Nothing is printed because we assigned the model to an object called `model_1`.
+
+Ask R to summarise it:
+
+```{r}
+# summary() displays several diagnostics and a coefficients table.
+# For now, focus mainly on Estimate, Std. Error and the coefficient names.
+summary(model_1)
+```
+
+The output is long. For now, focus on the **coefficients** table.
+
+We can also request only the estimated coefficients:
+
+```{r}
+# coef() extracts the estimated intercept and slope from the fitted model.
+coef(model_1)
+```
+
+And their confidence intervals:
+
+```{r}
+# confint() gives a confidence interval for each model coefficient.
+confint(model_1)
+```
+
+## Read the model in plain English
+
+The model can be written conceptually as:
+
+```text
+expected wage = intercept + slope × education
+```
+
+The coefficient for `education` is the **slope**.
+
+Suppose, only as an illustration, that the coefficient were `0.80`.
+
+We would read it as:
+
+> Each additional year of education is associated with an estimated 0.80-unit increase in hourly wage in this sample.
+
+The real coefficient is whatever R estimates from the data.
+
+### Why units matter
+
+Never write:
+
+> “Education has an effect of 0.8.”
+
+Write what the number means:
+
+> “One additional year of education is associated with an estimated ___ increase in hourly wage.”
+
+## What about the intercept?
+
+The intercept is the model's predicted wage when:
+
+```text
+education = 0
+```
+
+That may be mathematically necessary but substantively uninteresting if zero years of education is far from the part of the data we care about.
+
+A coefficient can exist mathematically without being the quantity we want to discuss substantively.
+
+---
+
+# 5. A group comparison is also a regression
+
+Regression is not only for two numerical variables.
+
+We can use a categorical predictor:
+
+```{r}
+# Because sex is a factor, lm() automatically represents its categories
+# through contrasts relative to a reference category.
+model_sex <- lm(
+  wages ~ sex,
+  data = analysis_data
+)
+
+summary(model_sex)
+confint(model_sex)
+```
+
+Check the levels of `sex`:
+
+```{r}
+# The first factor level is normally the default reference category.
+levels(analysis_data$sex)
+```
+
+R chooses one category as the **reference category**.
+
+The coefficient for the other category represents an estimated difference from that reference group.
+
+This means that:
+
+```{r}
+# A two-group comparison written as a t-test.
+t.test(wages ~ sex, data = analysis_data)
+```
+
+and:
+
+```{r}
+# A closely related comparison written as a linear model.
+lm(wages ~ sex, data = analysis_data)
+```
+
+are asking closely related questions using different presentations of the same basic comparison.
+
+This is one reason regression is so useful: many apparently different statistical questions can be expressed in one modelling framework.
+
+## Change the reference category deliberately
+
+Sometimes the default reference is not the comparison you want.
+
+```{r}
+# Inspect the current factor order before changing anything.
+levels(analysis_data$sex)
+```
+
+You can choose a reference category explicitly with `relevel()`.
+
+```{r}
+analysis_data <- analysis_data |>
+  mutate(
+    # relevel() changes which category is used as the baseline in the model.
+    # It does NOT change anybody's observed category.
+    sex = relevel(sex, ref = "Female")
+  )
+
+# Confirm the new level order.
+levels(analysis_data$sex)
+```
+
+Refit the model:
+
+```{r}
+model_sex <- lm(
+  wages ~ sex,
+  data = analysis_data
+)
+
+# Compare the coefficients with the previous parameterisation.
+coef(model_sex)
+```
+
+The underlying fitted values do not change merely because we changed the reference category. What changes is how the group difference is written in the coefficients table.
+
+---
+
+# 6. Multiple regression: what changes after adjustment?
+
+Return to our main model:
+
+```{r}
+model_1 <- lm(
+  wages ~ education,
+  data = analysis_data
+)
+```
+
+This model estimates the overall association between education and wage.
+
+But education is not the only variable associated with wages.
+
+Let us add age.
+
+```{r}
+# The + sign means that both education and age enter as predictors.
+model_2 <- lm(
+  wages ~ education + age,
+  data = analysis_data
+)
+
+summary(model_2)
+```
+
+Compare the education coefficient in the two models.
+
+```{r}
+# Simple model: education is the only predictor.
+coef(model_1)
+
+# Adjusted model: age is included as an additional predictor.
+coef(model_2)
+```
+
+The coefficient for education in `model_2` now has a more specific interpretation:
+
+> the estimated difference in hourly wage associated with one additional year of education, **holding age constant**.
+
+Now add the two categorical variables available in the dataset.
+
+```{r}
+# R handles the factor predictors sex and language automatically,
+# using one reference category for each.
+model_3 <- lm(
+  wages ~ education + age + sex + language,
+  data = analysis_data
+)
+
+summary(model_3)
+confint(model_3)
+```
+
+Again, compare the education coefficient.
+
+```{r}
+# ["education"] selects one named coefficient from each coefficient vector.
+# This makes the comparison easier than scanning the full model output.
+coef(model_1)["education"]
+coef(model_2)["education"]
+coef(model_3)["education"]
+```
+
+This is a useful habit whenever you build models progressively:
+
+> Do not only ask whether a coefficient is “significant”. Ask how its estimated magnitude changes when the model changes.
+
+## Why can a coefficient change?
+
+Suppose a third variable is associated with both:
+
+- the predictor we care about;
+- the outcome we care about.
+
+Then part of the simple association may reflect the structure of that third variable.
+
+This is one route to what is often called **confounding**.
+
+But be careful with the language:
+
+> Adding variables to a regression is not automatically the same thing as identifying a causal effect.
+
+Whether a variable should be controlled for is a **substantive and causal question**, not simply a software decision.
+
+---
+
+# 7. What multiple regression does not solve
+
+It would be tempting to conclude:
+
+> “An extra year of education causes wages to increase by the education coefficient.”
+
+Our analysis does not justify that sentence.
+
+Why not?
+
+Because the data are observational and our small teaching dataset does not contain everything that could matter.
+
+Possible issues include:
+
+- omitted variables;
+- selection into different levels of education;
+- occupational and sector differences;
+- work experience;
+- measurement error;
+- survey design and weights;
+- non-linear relationships;
+- interactions between variables;
+- missing data mechanisms.
+
+Regression answers a precise conditional association question under a model. It does not create a randomized experiment.
+
+## A quick look at residuals
+
+A model also makes assumptions about the pattern left unexplained.
+
+```{r}
+# plot() has several diagnostic views for an lm object.
+# which = 1 selects "Residuals vs Fitted".
+# We look for obvious structure rather than a completely random cloud.
+plot(model_3, which = 1)
+```
+
+You do not need to become an expert in diagnostics today. The important habit is:
+
+> Never treat `summary(model)` as the end of the analysis.
+
+A model should be checked against the data and against the substantive research question.
+
+---
+
+# 8. Debrief
+
+Today we moved through a sequence that is useful far beyond this particular dataset:
+
+```text
+DESCRIBE THE DATA
+        ↓
+ESTIMATE A QUANTITY
+        ↓
+QUANTIFY UNCERTAINTY
+        ↓
+COMPARE GROUPS
+        ↓
+FIT A SIMPLE MODEL
+        ↓
+ADD RELEVANT VARIABLES
+        ↓
+INTERPRET THE COEFFICIENTS
+        ↓
+STATE WHAT THE DESIGN DOES — AND DOES NOT — SUPPORT
+```
+
+The central R commands were:
+
+```text
+summarise()
+group_by()
+t.test()
+lm()
+summary()
+coef()
+confint()
+```
+
+The central conceptual move was:
+
+> **Do not ask only whether there is a result. Ask what was estimated, how large it is, how uncertain it is, and what assumptions are required to interpret it.**
+
+In Session 3, we will move to a different problem: data in which observations are **not independent** — for example repeated measurements from the same participant, student, object or stimulus — and introduce mixed-effects models.
